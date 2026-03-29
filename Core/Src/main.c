@@ -22,7 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "motor_control.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -55,6 +55,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+Motor_HandleTypeDef motor;  // 电机1
 /* USER CODE END 0 */
 
 /**
@@ -86,9 +87,25 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-	HAL_GPIO_WritePin(GPIOA,GPIO_PIN_4,GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
-	HAL_Delay(1000);
+
+  /* 定义配置 */
+  Motor_Config_t motor_config = {
+      .step_port = GPIOA,
+      .step_pin = GPIO_PIN_5,
+      .dir_port = GPIOA,
+      .dir_pin = GPIO_PIN_4,
+      .en_port = GPIOA,
+      .en_pin = GPIO_PIN_6,
+      .max_speed = 5000,
+      .min_speed = 500,
+      .accel_steps = 1000
+  };
+
+  /* 初始化电机 */
+  Motor_Error_t error = Motor_Init(&motor, &motor_config);
+  if (error != MOTOR_OK) {
+    /* 错误处理 */
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -98,10 +115,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-			HAL_Delay(1);
-			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-			HAL_Delay(1);
+    
+    /* 正转一圈 */
+    Motor_Start(&motor, 1600, MOTOR_DIR_CW);    
+    HAL_Delay(1000);
+
+    /* 反转一圈 */
+    Motor_Start(&motor, 1600, MOTOR_DIR_CCW);
+    HAL_Delay(1000);
   }
   /* USER CODE END 3 */
 }
