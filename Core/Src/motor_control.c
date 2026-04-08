@@ -9,6 +9,7 @@
 
 #include "motor_control.h"
 #include "stm32f1xx_hal.h"
+#include "math.h"
 
 /*============================================================================
  * 静态函数声明
@@ -169,13 +170,16 @@ static void Motor_TrapezoidalControl(Motor_HandleTypeDef *motor)
     /* 当前处于加速阶段 */
     if (motor->current_step < motor->accel_steps)
     {
-        /* 线性加速: V = Vmin + (Vmax - Vmin) * step / accel_steps */
+        /* 标准梯形加速: v² = v₀² + 2aS */
         if (motor->accel_steps > 0)
         {
-            uint64_t speed_diff = (motor->max_speed - motor->min_speed);
-            uint64_t step_progress = motor->current_step;
-            new_speed = motor->min_speed + 
-                        (uint32_t)((speed_diff * step_progress) / motor->accel_steps);
+            uint64_t v_min_sq = (uint64_t)motor->min_speed * motor->min_speed;
+            uint64_t v_max_sq = (uint64_t)motor->max_speed * motor->max_speed;
+            uint64_t a = (v_max_sq - v_min_sq) / (2 * motor->accel_steps);
+            uint64_t v_sq = v_min_sq + 2 * a * motor->current_step;
+            
+            /* 开方计算速度 */
+            new_speed = (uint32_t)sqrt(v_sq);
         }
         else
         {
@@ -185,16 +189,19 @@ static void Motor_TrapezoidalControl(Motor_HandleTypeDef *motor)
     /* 当前处于减速阶段 */
     else if (motor->current_step >= motor->decel_start)
     {
-        /* 线性减速: V = Vmax - (Vmax - Vmin) * decel_step / decel_total */
+        /* 标准梯形减速: v² = v_max² - 2a(S - decel_start) */
         uint32_t decel_step = motor->current_step - motor->decel_start;
         uint32_t decel_total = motor->total_steps - motor->decel_start;
         
         if (decel_total > 0)
         {
-            uint64_t speed_diff = (motor->max_speed - motor->min_speed);
-            uint64_t decel_progress = decel_step;
-            new_speed = motor->max_speed - 
-                        (uint32_t)((speed_diff * decel_progress) / decel_total);
+            uint64_t v_min_sq = (uint64_t)motor->min_speed * motor->min_speed;
+            uint64_t v_max_sq = (uint64_t)motor->max_speed * motor->max_speed;
+            uint64_t a = (v_max_sq - v_min_sq) / (2 * decel_total);
+            uint64_t v_sq = v_max_sq - 2 * a * decel_step;
+            
+            /* 开方计算速度 */
+            new_speed = (uint32_t)sqrt(v_sq);
         }
         else
         {
