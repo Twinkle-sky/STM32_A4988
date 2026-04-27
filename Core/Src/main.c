@@ -97,8 +97,8 @@ int main(void)
       .en_port = GPIOA,
       .en_pin = GPIO_PIN_6,
       .max_speed = 5000,
-      .min_speed = 500,
-      .accel_steps = 1000
+      .min_speed = 100,
+      .accel = 1000,
   };
 
   /* 初始化电机 */

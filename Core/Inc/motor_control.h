@@ -7,10 +7,10 @@
  * 宏定义
  *============================================================================*/
 #define MOTOR_PULSE_HIGH_US         2U      /* 脉冲高电平持续时间(us) */
-#define MOTOR_MIN_PERIOD_US         100U    /* 最小脉冲周期(us)，对应最大速度10000步/秒 */
+#define MOTOR_MIN_PERIOD_US         10U    /* 最小脉冲周期(us)，对应最大速度10000步/秒 */
 #define MOTOR_DEFAULT_MAX_SPEED     4000U   /* 默认最大速度(步/秒) */
 #define MOTOR_DEFAULT_MIN_SPEED     400U    /* 默认最小速度(步/秒) */
-#define MOTOR_DEFAULT_ACCEL_STEPS   800U    /* 默认加速步数 */
+#define MOTOR_DEFAULT_ACCEL         800U    /* 默认加速度(步/秒^2) */
 
 /* 通用电平定义 */
 #define MOTOR_PIN_RESET              0U     /* 低电平 */
@@ -77,14 +77,14 @@ typedef struct {
     /* 运动参数 */
     uint32_t max_speed;         /* 最大速度(步/秒) */
     uint32_t min_speed;         /* 最小速度(步/秒) */
-    uint32_t accel_steps;       /* 加速步数 */
+    uint32_t accel;             /* 加速度(步/秒^2) */
 } Motor_Config_t;
 
 typedef struct {
     /* 配置参数 */
     uint32_t max_speed;         /* 最大速度(步/秒) */
     uint32_t min_speed;         /* 最小速度(步/秒) */
-    uint32_t accel_steps;       /* 加速步数 */
+    uint32_t accel;             /* 加速度(步/秒^2) */
     
     /* GPIO配置 */
     void *step_port;            /* STEP引脚端口 */
@@ -97,7 +97,15 @@ typedef struct {
     /* 运动状态 */
     uint32_t total_steps;       /* 总步数 */
     uint32_t current_step;      /* 当前步数 */
+
+    uint32_t accel_steps;       /* 加速步数 */
     uint32_t decel_start;       /* 减速起始步数 */
+
+    float c0;                  /* 速度系数0 */
+    float cn;                  /* 速度系数n */
+    int32_t n;                 /* 速度系数n */
+
+    uint32_t min_interval;      /* 最小间隔时间(微秒) */
     uint32_t current_speed;     /* 当前速度(步/秒) */
     
     /* 控制标志 */

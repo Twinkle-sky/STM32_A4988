@@ -20,7 +20,7 @@ static void Motor_DefaultDelayUs(uint32_t us);
 static uint32_t Motor_SpeedToPeriod(uint32_t speed);
 static uint32_t Motor_PeriodToSpeed(uint32_t period_us);
 static void Motor_StepOutput(Motor_HandleTypeDef *motor, uint32_t period_us);
-static void Motor_TrapezoidalControl(Motor_HandleTypeDef *motor);
+static uint32_t Motor_TrapezoidalControl(Motor_HandleTypeDef *motor);
 
 /*============================================================================
  * 全局变量
@@ -59,7 +59,7 @@ static void Motor_DefaultGpioWrite(void *port, uint16_t pin, uint8_t state)
  */
 static void Motor_DefaultDelayUs(uint32_t us)
 {
-    const uint32_t loop_coefficient = 24;
+    const uint32_t loop_coefficient = 2;
     
     for (uint32_t i = 0; i < us * loop_coefficient; i++)
     {
@@ -163,66 +163,42 @@ static void Motor_StepOutput(Motor_HandleTypeDef *motor, uint32_t period_us)
  * @brief 梯形加减速控制算法
  * @param motor 电机句柄指针
  */
-static void Motor_TrapezoidalControl(Motor_HandleTypeDef *motor)
+static uint32_t Motor_TrapezoidalControl(Motor_HandleTypeDef *motor)
 {
-    uint32_t new_speed;
-
-    /* 当前处于加速阶段 */
+    /* 加速段 */
     if (motor->current_step < motor->accel_steps)
     {
-        /* 标准梯形加速: v² = v₀² + 2aS */
-        if (motor->accel_steps > 0)
+        motor->n++;
+
+        motor->cn = motor->cn -
+            (2.0f * motor->cn) / (4.0f * motor->n + 1.0f);
+
+        if (motor->cn < motor->min_interval)
         {
-            uint64_t v_min_sq = (uint64_t)motor->min_speed * motor->min_speed;
-            uint64_t v_max_sq = (uint64_t)motor->max_speed * motor->max_speed;
-            uint64_t a = (v_max_sq - v_min_sq) / (2 * motor->accel_steps);
-            uint64_t v_sq = v_min_sq + 2 * a * motor->current_step;
-            
-            /* 开方计算速度 */
-            new_speed = (uint32_t)sqrt(v_sq);
-        }
-        else
-        {
-            new_speed = motor->max_speed;
+            motor->cn = motor->min_interval;
         }
     }
-    /* 当前处于减速阶段 */
+    /* 减速段 */
     else if (motor->current_step >= motor->decel_start)
     {
-        /* 标准梯形减速: v² = v_max² - 2a(S - decel_start) */
-        uint32_t decel_step = motor->current_step - motor->decel_start;
-        uint32_t decel_total = motor->total_steps - motor->decel_start;
-        
-        if (decel_total > 0)
+        if (motor->n > 1)
         {
-            uint64_t v_min_sq = (uint64_t)motor->min_speed * motor->min_speed;
-            uint64_t v_max_sq = (uint64_t)motor->max_speed * motor->max_speed;
-            uint64_t a = (v_max_sq - v_min_sq) / (2 * decel_total);
-            uint64_t v_sq = v_max_sq - 2 * a * decel_step;
-            
-            /* 开方计算速度 */
-            new_speed = (uint32_t)sqrt(v_sq);
-        }
-        else
-        {
-            new_speed = motor->min_speed;
+            motor->n--;
+
+            motor->cn = motor->cn +
+                (2.0f * motor->cn) / (4.0f * motor->n + 1.0f);
         }
     }
-    /* 当前处于匀速阶段 */
+    /* 匀速段 */
     else
     {
-    /* 匀速阶段 */
-        new_speed = motor->max_speed;
+        motor->cn = motor->min_interval;
     }
-     
-    /* 速度限幅 */
-    if (new_speed > motor->max_speed) new_speed = motor->max_speed;
-    if (new_speed < motor->min_speed) new_speed = motor->min_speed;
-    
-    /* 防止速度为0 */
-    if (new_speed == 0) new_speed = motor->min_speed;
-    
-    motor->current_speed = new_speed;
+
+    motor->current_speed =
+        Motor_PeriodToSpeed((uint32_t)motor->cn);
+
+    return (uint32_t)motor->cn;
 }
 
 /**
@@ -240,7 +216,7 @@ Motor_Error_t Motor_Init(Motor_HandleTypeDef *motor, Motor_Config_t *config)
     
     motor->max_speed = (config->max_speed > 0) ? config->max_speed : MOTOR_DEFAULT_MAX_SPEED;
     motor->min_speed = (config->min_speed > 0) ? config->min_speed : MOTOR_DEFAULT_MIN_SPEED;
-    motor->accel_steps = (config->accel_steps > 0) ? config->accel_steps : MOTOR_DEFAULT_ACCEL_STEPS;
+    motor->accel = (config->accel > 0) ? config->accel : MOTOR_DEFAULT_ACCEL;
 
     motor->step_port = config->step_port;
     motor->step_pin = config->step_pin;
@@ -254,10 +230,6 @@ Motor_Error_t Motor_Init(Motor_HandleTypeDef *motor, Motor_Config_t *config)
         motor->max_speed = motor->min_speed;
     }
     
-    if (motor->accel_steps == 0)
-    {
-        motor->accel_steps = 1;
-    }
     
     motor->total_steps = 0;
     motor->current_step = 0;
@@ -343,40 +315,52 @@ Motor_Error_t Motor_Start(Motor_HandleTypeDef *motor, uint32_t steps, Motor_Dire
         }
     }
     
-    motor->total_steps = steps;
-    motor->current_step = 0;
-    motor->current_speed = motor->min_speed;
-    motor->state = MOTOR_STATE_RUNNING;
-    
-    if (steps < (2 * motor->accel_steps))
+    motor->total_steps   = steps;
+    motor->current_step  = 0;
+    motor->n             = 1;
+    motor->state         = MOTOR_STATE_RUNNING;
+
+    /* 根据真实加速度计算理论加速步数 */
+    motor->accel_steps =
+        (motor->max_speed * motor->max_speed -
+        motor->min_speed * motor->min_speed)
+        / (2 * motor->accel);
+
+    /* 短距离自动压缩梯形 */
+    if (motor->accel_steps * 2 > steps)
     {
         motor->accel_steps = steps / 2;
-        motor->decel_start = steps - motor->accel_steps;
-        
-        if (steps < 2)
-        {
-            motor->accel_steps = 0;
-            motor->decel_start = 0;
-        }
     }
-    else
+
+    motor->decel_start = steps - motor->accel_steps;
+
+    /* 初始脉冲间隔 c0 */
+    motor->c0 = 0.676f * sqrtf(2.0f / motor->accel) * 1000000.0f ;
+
+    /* 从 min_speed 起步则限制初值 */
+    uint32_t min_speed_period = Motor_SpeedToPeriod(motor->min_speed);
+
+    if (motor->c0 > min_speed_period)
     {
-        motor->decel_start = steps - motor->accel_steps;
+        motor->c0 = min_speed_period;
     }
+
+    motor->cn = motor->c0;
+
+    /* 最大速度对应最小周期 */
+    motor->min_interval = Motor_SpeedToPeriod(motor->max_speed);
+
+    // motor->current_speed = Motor_PeriodToSpeed((uint32_t)motor->cn);
     
+
     while ((motor->current_step < steps) && (motor->state == MOTOR_STATE_RUNNING))
     {
         Motor_TrapezoidalControl(motor);
         
-        uint32_t period = Motor_SpeedToPeriod(motor->current_speed);
-        Motor_StepOutput(motor, period);
+        // uint32_t period = Motor_SpeedToPeriod(motor->current_speed);
+        Motor_StepOutput(motor, motor->cn);
     }
-    
-    if (motor->step_port != NULL)
-    {
-        g_motor_hal.gpio_write(motor->step_port, motor->step_pin, MOTOR_STEP_LOW_LEVEL);
-    }
-    
+
     motor->state = MOTOR_STATE_IDLE;
     
     return MOTOR_OK;
