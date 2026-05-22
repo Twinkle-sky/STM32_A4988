@@ -1,28 +1,31 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "tim.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "motor_control.h"
+#include "s_curve.h"       /* S曲线算法头文件 */
+#include "stepper_motor.h" /* 步进电机驱动头文件 */
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,8 +57,40 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+SCurve_Handle_t motion;
 
-Motor_HandleTypeDef motor;  // 电机1
+/* GPIO引脚定义 - 步进电机控制 */
+#define STEP_PIN    GPIO_PIN_5
+#define DIR_PIN     GPIO_PIN_4
+#define EN_PIN      GPIO_PIN_6
+#define STEP_PORT   GPIOA
+#define DIR_PORT    GPIOA
+#define EN_PORT     GPIOA
+
+/* GPIO操作函数实现 */
+static void stepper_write_step(Stepper_PinState_t state) {
+    HAL_GPIO_WritePin(STEP_PORT, STEP_PIN, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void stepper_write_dir(Stepper_PinState_t state) {
+    HAL_GPIO_WritePin(DIR_PORT, DIR_PIN, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void stepper_write_en(Stepper_PinState_t state) {
+    HAL_GPIO_WritePin(EN_PORT, EN_PIN, state ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static Stepper_PinState_t stepper_read_step(void) {
+    return HAL_GPIO_ReadPin(STEP_PORT, STEP_PIN);
+}
+
+/* GPIO操作接口实例 */
+const Stepper_GPIO_Interface_t stepper_gpio_if = {
+    .write_step = stepper_write_step,
+    .write_dir  = stepper_write_dir,
+    .write_en   = stepper_write_en,
+    .read_step  = stepper_read_step
+};
 /* USER CODE END 0 */
 
 /**
@@ -86,44 +121,44 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
-  /* 定义配置 */
-  Motor_Config_t motor_config = {
-      .step_port = GPIOA,
-      .step_pin = GPIO_PIN_5,
-      .dir_port = GPIOA,
-      .dir_pin = GPIO_PIN_4,
-      .en_port = GPIOA,
-      .en_pin = GPIO_PIN_6,
-      .max_speed = 5000,
-      .min_speed = 100,
-      .accel = 1000,
-  };
+    SCurveConfig_t cfg = {
+        .v_start  = 200.0f,   /**< 起始速度: 200 step/s (约12 RPM) */
+        .v_target = 4000.0f,  /**< 目标速度: 4000 step/s */
+        .v_end    = 0.0f,     /**< 结束速度: 0 (完全停止) */
+        .v_max    = 4000.0f,  /**< 最大限制速度: 4000 step/s */
+        .accl     = 1000.0f,  /**< 最大加速度: 1000 step/s^2 */
+        .decel    = 1000.0f,  /**< 最大减速度: 1000 step/s^2 */
+        .jerk     = 8000.0f   /**< 加加速度: 8000 step/s^3 */
+    };
 
-  /* 初始化电机 */
-  Motor_Error_t error = Motor_Init(&motor, &motor_config);
-  if (error != MOTOR_OK) {
-    /* 错误处理 */
-  }
+    /* 初始化S曲线控制器 */
+    SCurve_Init(&motion, &cfg);
+
+    /* 初始化步进电机驱动 */
+    Stepper_Init(&motion, &stepper_gpio_if);
+
+    HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+    while (1)
+    {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-    /* 正转一圈 */
-    Motor_Start(&motor, 1600, MOTOR_DIR_CW);    
-    HAL_Delay(1000);
 
-    /* 反转一圈 */
-    Motor_Start(&motor, 1600, MOTOR_DIR_CCW);
-    HAL_Delay(1000);
-  }
+        Stepper_Move(6400, 1);
+        while (motion.running);
+        HAL_Delay(1000);
+
+        Stepper_Move(6400, 0);
+        while (motion.running);
+        HAL_Delay(1000);
+    }
   /* USER CODE END 3 */
 }
 
@@ -168,6 +203,19 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief  TIM周期中断回调函数
+ * @param  htim: TIM句柄
+ * @retval None
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2)
+    {
+        Stepper_TIM_PeriodElapsed();
+    }
+}
+
 /* USER CODE END 4 */
 
 /**
@@ -177,11 +225,11 @@ void SystemClock_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+    /* User can add his own implementation to report the HAL error return state */
+    __disable_irq();
+    while (1)
+    {
+    }
   /* USER CODE END Error_Handler_Debug */
 }
 
@@ -196,8 +244,9 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+    /* User can add his own implementation to report the file name and line
+       number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
+       line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
